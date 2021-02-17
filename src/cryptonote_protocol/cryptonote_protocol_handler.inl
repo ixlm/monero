@@ -338,10 +338,6 @@ namespace cryptonote
     }
     context.m_remote_blockchain_height = hshd.current_height;
     context.m_pruning_seed = hshd.pruning_seed;
-#ifdef CRYPTONOTE_PRUNING_DEBUG_SPOOF_SEED
-    context.m_pruning_seed = tools::make_pruning_seed(1 + (context.m_remote_address.as<epee::net_utils::ipv4_network_address>().ip()) % (1 << CRYPTONOTE_PRUNING_LOG_STRIPES), CRYPTONOTE_PRUNING_LOG_STRIPES);
-    LOG_INFO_CC(context, "New connection posing as pruning seed " << epee::string_tools::to_string_hex(context.m_pruning_seed) << ", seed address " << &context.m_pruning_seed);
-#endif
 
     uint64_t target = m_core.get_target_blockchain_height();
     if (target == 0)
@@ -549,6 +545,7 @@ namespace cryptonote
       }      
 
       std::vector<tx_blob_entry> have_tx;
+      have_tx.reserve(new_block.tx_hashes.size());
 
       // Instead of requesting missing transactions by hash like BTC, 
       // we do it by index (thanks to a suggestion from moneromooo) because
@@ -557,6 +554,7 @@ namespace cryptonote
       // Also, remember to pepper some whitespace changes around to bother
       // moneromooo ... only because I <3 him. 
       std::vector<uint64_t> need_tx_indices;
+      need_tx_indices.reserve(new_block.tx_hashes.size());
         
       transaction tx;
       crypto::hash tx_hash;
@@ -829,6 +827,7 @@ namespace cryptonote
     }
 
     std::vector<crypto::hash> txids;
+    txids.reserve(b.tx_hashes.size());
     NOTIFY_NEW_FLUFFY_BLOCK::request fluffy_response;
     fluffy_response.b.block = t_serializable_object_to_blob(b);
     fluffy_response.current_blockchain_height = arg.current_blockchain_height;
@@ -2189,6 +2188,7 @@ skip:
           if (span.second > 0)
           {
             is_next = true;
+            req.blocks.reserve(hashes.size());
             for (const auto &hash: hashes)
             {
               req.blocks.push_back(hash);
@@ -2247,6 +2247,7 @@ skip:
         if (span.second > 0)
         {
           is_next = true;
+          req.blocks.reserve(hashes.size());
           for (const auto &hash: hashes)
           {
             req.blocks.push_back(hash);
@@ -2280,6 +2281,7 @@ skip:
             return false;
           }
 
+          req.blocks.reserve(req.blocks.size() + span.second);
           for (size_t n = 0; n < span.second; ++n)
           {
             req.blocks.push_back(context.m_needed_objects[n].first);
@@ -2579,6 +2581,7 @@ skip:
     }
 
     context.m_needed_objects.clear();
+    context.m_needed_objects.reserve(arg.m_block_ids.size());
     uint64_t added = 0;
     std::unordered_set<crypto::hash> blocks_found;
     bool first = true;
@@ -2593,11 +2596,16 @@ skip:
       }
       int where;
       const bool have_block = m_core.have_block_unlocked(arg.m_block_ids[i], &where);
-      if (first && !have_block)
+      if (first)
       {
-        LOG_ERROR_CCONTEXT("First block hash is unknown, dropping connection");
-        drop_connection_with_score(context, 5, false);
-        return 1;
+        if (!have_block && !m_block_queue.requested(arg.m_block_ids[i]) && !m_block_queue.have(arg.m_block_ids[i]))
+        {
+          LOG_ERROR_CCONTEXT("First block hash is unknown, dropping connection");
+          drop_connection_with_score(context, 5, false);
+          return 1;
+        }
+        if (!have_block)
+          expect_unknown = true;
       }
       if (!first)
       {
@@ -2873,25 +2881,6 @@ skip:
         return true;
       });
     }
-  }
-  //------------------------------------------------------------------------------------------------------------------------
-  template<class t_core>
-  void t_cryptonote_protocol_handler<t_core>::on_connection_new(cryptonote_connection_context &context)
-  {
-    context.set_max_bytes(nodetool::COMMAND_HANDSHAKE_T<cryptonote::CORE_SYNC_DATA>::ID, 65536);
-    context.set_max_bytes(nodetool::COMMAND_TIMED_SYNC_T<cryptonote::CORE_SYNC_DATA>::ID, 65536);
-    context.set_max_bytes(nodetool::COMMAND_PING::ID, 4096);
-    context.set_max_bytes(nodetool::COMMAND_REQUEST_SUPPORT_FLAGS::ID, 4096);
-
-    context.set_max_bytes(cryptonote::NOTIFY_NEW_BLOCK::ID, 1024 * 1024 * 128); // 128 MB (max packet is a bit less than 100 MB though)
-    context.set_max_bytes(cryptonote::NOTIFY_NEW_TRANSACTIONS::ID, 1024 * 1024 * 128); // 128 MB (max packet is a bit less than 100 MB though)
-    context.set_max_bytes(cryptonote::NOTIFY_REQUEST_GET_OBJECTS::ID, 1024 * 1024 * 2); // 2 MB
-    context.set_max_bytes(cryptonote::NOTIFY_RESPONSE_GET_OBJECTS::ID, 1024 * 1024 * 128); // 128 MB (max packet is a bit less than 100 MB though)
-    context.set_max_bytes(cryptonote::NOTIFY_REQUEST_CHAIN::ID, 512 * 1024); // 512 kB
-    context.set_max_bytes(cryptonote::NOTIFY_RESPONSE_CHAIN_ENTRY::ID, 1024 * 1024 * 4); // 4 MB
-    context.set_max_bytes(cryptonote::NOTIFY_NEW_FLUFFY_BLOCK::ID, 1024 * 1024 * 4); // 4 MB, but it does not includes transaction data
-    context.set_max_bytes(cryptonote::NOTIFY_REQUEST_FLUFFY_MISSING_TX::ID, 1024 * 1024); // 1 MB
-    context.set_max_bytes(cryptonote::NOTIFY_GET_TXPOOL_COMPLEMENT::ID, 1024 * 1024 * 4); // 4 MB
   }
   //------------------------------------------------------------------------------------------------------------------------
   template<class t_core>

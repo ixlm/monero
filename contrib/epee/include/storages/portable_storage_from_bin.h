@@ -29,6 +29,7 @@
 #pragma once 
 
 #include "misc_language.h"
+#include "misc_log_ex.h"
 #include "portable_storage_base.h"
 #include "portable_storage_bin_utils.h"
 
@@ -37,8 +38,6 @@
 #else 
 #define EPEE_PORTABLE_STORAGE_RECURSION_LIMIT_INTERNAL 100
 #endif
-#define EPEE_PORTABLE_STORAGE_OBJECT_LIMIT_INTERNAL 65536
-#define EPEE_PORTABLE_STORAGE_OBJECT_FIELD_LIMIT_INTERNAL 262144
 
 namespace epee
 {
@@ -47,21 +46,20 @@ namespace epee
     template<typename T>
     struct ps_min_bytes {
       static constexpr const size_t strict = 4096; // actual low bound
-      static constexpr const size_t rough = 4096; // when we want to be stricter for DoS prevention
     };
-    template<> struct ps_min_bytes<uint64_t> { static constexpr const size_t strict = 8, rough = 8; };
-    template<> struct ps_min_bytes<int64_t> { static constexpr const size_t strict = 8, rough = 8; };
-    template<> struct ps_min_bytes<uint32_t> { static constexpr const size_t strict = 4, rough = 4; };
-    template<> struct ps_min_bytes<int32_t> { static constexpr const size_t strict = 4, rough = 4; };
-    template<> struct ps_min_bytes<uint16_t> { static constexpr const size_t strict = 2, rough = 2; };
-    template<> struct ps_min_bytes<int16_t> { static constexpr const size_t strict = 2, rough = 2; };
-    template<> struct ps_min_bytes<uint8_t> { static constexpr const size_t strict = 1, rough = 1; };
-    template<> struct ps_min_bytes<int8_t> { static constexpr const size_t strict = 1, rough = 1; };
-    template<> struct ps_min_bytes<double> { static constexpr const size_t strict = 8, rough = 8; };
-    template<> struct ps_min_bytes<bool> { static constexpr const size_t strict = 1, rough = 1; };
-    template<> struct ps_min_bytes<std::string> { static constexpr const size_t strict = 2, rough = 16; };
-    template<> struct ps_min_bytes<section> { static constexpr const size_t strict = 1, rough = 256; };
-    template<> struct ps_min_bytes<array_entry> { static constexpr const size_t strict = 1, rough = 128; };
+    template<> struct ps_min_bytes<uint64_t> { static constexpr const size_t strict = 8; };
+    template<> struct ps_min_bytes<int64_t> { static constexpr const size_t strict = 8; };
+    template<> struct ps_min_bytes<uint32_t> { static constexpr const size_t strict = 4; };
+    template<> struct ps_min_bytes<int32_t> { static constexpr const size_t strict = 4; };
+    template<> struct ps_min_bytes<uint16_t> { static constexpr const size_t strict = 2; };
+    template<> struct ps_min_bytes<int16_t> { static constexpr const size_t strict = 2; };
+    template<> struct ps_min_bytes<uint8_t> { static constexpr const size_t strict = 1; };
+    template<> struct ps_min_bytes<int8_t> { static constexpr const size_t strict = 1; };
+    template<> struct ps_min_bytes<double> { static constexpr const size_t strict = 8; };
+    template<> struct ps_min_bytes<bool> { static constexpr const size_t strict = 1; };
+    template<> struct ps_min_bytes<std::string> { static constexpr const size_t strict = 2; };
+    template<> struct ps_min_bytes<section> { static constexpr const size_t strict = 1; };
+    template<> struct ps_min_bytes<array_entry> { static constexpr const size_t strict = 1; };
 
     struct throwable_buffer_reader
     {
@@ -84,6 +82,7 @@ namespace epee
       void read(array_entry &ae);
       template<class t_type>
       size_t min_bytes() const;
+      void set_limits(size_t objects, size_t fields, size_t strings);
     private:
       struct recursuion_limitation_guard
       {
@@ -106,6 +105,11 @@ namespace epee
       size_t m_recursion_count;
       size_t m_objects;
       size_t m_fields;
+      size_t m_strings;
+
+      size_t max_objects;
+      size_t max_fields;
+      size_t max_strings;
     };
 
     inline throwable_buffer_reader::throwable_buffer_reader(const void* ptr, size_t sz)
@@ -119,6 +123,10 @@ namespace epee
       m_recursion_count = 0;
       m_objects = 0;
       m_fields = 0;
+      m_strings = 0;
+      max_objects = std::numeric_limits<size_t>::max();
+      max_fields = std::numeric_limits<size_t>::max();
+      max_strings = std::numeric_limits<size_t>::max();
     }
     inline 
     void throwable_buffer_reader::read(void* target, size_t count)
@@ -169,8 +177,13 @@ namespace epee
       CHECK_AND_ASSERT_THROW_MES(size <= m_count / ps_min_bytes<type_name>::strict, "Size sanity check failed");
       if (std::is_same<type_name, section>())
       {
-        CHECK_AND_ASSERT_THROW_MES(size <= EPEE_PORTABLE_STORAGE_OBJECT_LIMIT_INTERNAL - m_objects, "Too many objects");
+        CHECK_AND_ASSERT_THROW_MES(size <= max_objects - m_objects, "Too many objects");
         m_objects += size;
+      }
+      else if (std::is_same<type_name, std::string>())
+      {
+        CHECK_AND_ASSERT_THROW_MES(size <= max_strings - m_strings, "Too many strings");
+        m_strings += size;
       }
 
       sa.reserve(size);
@@ -238,6 +251,8 @@ namespace epee
     inline storage_entry throwable_buffer_reader::read_se<std::string>()
     {
       RECURSION_LIMITATION();
+      CHECK_AND_ASSERT_THROW_MES(m_strings + 1 <= max_strings, "Too many strings");
+      m_strings += 1;
       return storage_entry(read<std::string>());
     }
 
@@ -246,7 +261,7 @@ namespace epee
     inline storage_entry throwable_buffer_reader::read_se<section>()
     {
       RECURSION_LIMITATION();
-      CHECK_AND_ASSERT_THROW_MES(m_objects < EPEE_PORTABLE_STORAGE_OBJECT_LIMIT_INTERNAL, "Too many objects");
+      CHECK_AND_ASSERT_THROW_MES(m_objects < max_objects, "Too many objects");
       ++m_objects;
       section s;//use extra variable due to vs bug, line "storage_entry se(section()); " can't be compiled in visual studio
       storage_entry se(std::move(s));
@@ -299,14 +314,16 @@ namespace epee
       RECURSION_LIMITATION();
       sec.m_entries.clear();
       size_t count = read_varint();
-      CHECK_AND_ASSERT_THROW_MES(count <= EPEE_PORTABLE_STORAGE_OBJECT_FIELD_LIMIT_INTERNAL - m_fields, "Too many object fields");
+      CHECK_AND_ASSERT_THROW_MES(count <= max_fields - m_fields, "Too many object fields");
       m_fields += count;
       while(count--)
       {
         //read section name string
         std::string sec_name;
         read_sec_name(sec_name);
-        sec.m_entries.emplace(std::move(sec_name), load_storage_entry());
+        const auto insert_loc = sec.m_entries.lower_bound(sec_name);
+        CHECK_AND_ASSERT_THROW_MES(insert_loc == sec.m_entries.end() || insert_loc->first != sec_name, "duplicate key: " << sec_name);
+        sec.m_entries.emplace_hint(insert_loc, std::move(sec_name), load_storage_entry());
       }
     }
     inline 
@@ -326,6 +343,13 @@ namespace epee
     {
       RECURSION_LIMITATION();
       CHECK_AND_ASSERT_THROW_MES(false, "Reading array entry is not supported");
+    }
+    inline
+    void throwable_buffer_reader::set_limits(size_t objects, size_t fields, size_t strings)
+    {
+      max_objects = objects;
+      max_fields = fields;
+      max_strings = strings;
     }
   }
 }
